@@ -139,6 +139,24 @@ func UserSelectedAttributes(selectorCfg *attributes.SelectorConfig) (map[attr.Na
 	return traceAttrs, err
 }
 
+func samplingParentContext(ctx context.Context, span *request.Span) context.Context {
+	if !span.TraceID.IsValid() || !span.ParentSpanID.IsValid() {
+		return ctx
+	}
+
+	parent := trace2.NewSpanContext(trace2.SpanContextConfig{
+		TraceID:    span.TraceID,
+		SpanID:     span.ParentSpanID,
+		TraceFlags: trace2.TraceFlags(span.TraceFlags),
+		Remote:     true,
+	})
+	if !parent.IsValid() {
+		return ctx
+	}
+
+	return trace2.ContextWithRemoteSpanContext(ctx, parent)
+}
+
 // GroupSpans must remain public for collectors embedding OBI.
 func GroupSpans(ctx context.Context, spans []request.Span, traceAttrs map[attr.Name]struct{}, sampler trace.Sampler, is instrumentations.InstrumentationSelection, redactKeys ...string) map[svc.UID][]TraceSpanAndAttributes {
 	spanGroups := map[svc.UID][]TraceSpanAndAttributes{}
@@ -165,7 +183,7 @@ func GroupSpans(ctx context.Context, spans []request.Span, traceAttrs map[attr.N
 		}
 
 		sr := spanSampler().ShouldSample(trace.SamplingParameters{
-			ParentContext: ctx,
+			ParentContext: samplingParentContext(ctx, span),
 			Name:          span.TraceName(),
 			TraceID:       span.TraceID,
 			Kind:          spanKind(span),
