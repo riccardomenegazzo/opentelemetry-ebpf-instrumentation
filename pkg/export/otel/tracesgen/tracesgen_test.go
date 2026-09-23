@@ -861,12 +861,106 @@ func TestGenAIResponseErrorAttributeCollision(t *testing.T) {
 	}
 }
 
+func TestGroupSpansSamplerReceivesSpanParentContext(t *testing.T) {
+	traceID := trace2.TraceID{1}
+	parentSpanID := trace2.SpanID{2}
+	span := request.Span{
+		Type:         request.EventTypeHTTP,
+		Method:       "GET",
+		Path:         "/",
+		Status:       200,
+		TraceID:      traceID,
+		SpanID:       trace2.SpanID{3},
+		ParentSpanID: parentSpanID,
+		TraceFlags:   uint8(trace2.FlagsSampled),
+	}
+	sampler := &recordingSampler{}
+
+	groups := GroupSpans(
+		t.Context(),
+		[]request.Span{span},
+		map[attr.Name]struct{}{},
+		sampler,
+		instrumentations.NewInstrumentationSelection(
+			[]instrumentations.Instrumentation{instrumentations.InstrumentationALL},
+		),
+	)
+
+	require.Len(t, groups[span.Service.UID], 1)
+	assert.Equal(t, traceID, sampler.parentContext.TraceID())
+	assert.Equal(t, parentSpanID, sampler.parentContext.SpanID())
+	assert.Equal(t, trace2.FlagsSampled, sampler.parentContext.TraceFlags())
+	assert.True(t, sampler.parentContext.IsRemote())
+}
+
+func TestGroupSpansParentBasedSamplerUsesSpanParent(t *testing.T) {
+	traceID := trace2.TraceID{1}
+	parentSpanID := trace2.SpanID{2}
+	selection := instrumentations.NewInstrumentationSelection(
+		[]instrumentations.Instrumentation{instrumentations.InstrumentationALL},
+	)
+
+	tests := []struct {
+		name         string
+		rootSampler  sdktrace.Sampler
+		parentSpanID trace2.SpanID
+		traceFlags   uint8
+		wantExport   bool
+	}{
+		{
+			name:         "sampled parent overrides always-off root",
+			rootSampler:  sdktrace.NeverSample(),
+			parentSpanID: parentSpanID,
+			traceFlags:   uint8(trace2.FlagsSampled),
+			wantExport:   true,
+		},
+		{
+			name:         "unsampled parent overrides always-on root",
+			rootSampler:  sdktrace.AlwaysSample(),
+			parentSpanID: parentSpanID,
+			traceFlags:   0,
+			wantExport:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			span := request.Span{
+				Type:         request.EventTypeHTTP,
+				Method:       "GET",
+				Path:         "/",
+				Status:       200,
+				TraceID:      traceID,
+				SpanID:       trace2.SpanID{3},
+				ParentSpanID: tt.parentSpanID,
+				TraceFlags:   tt.traceFlags,
+			}
+
+			groups := GroupSpans(
+				t.Context(),
+				[]request.Span{span},
+				map[attr.Name]struct{}{},
+				sdktrace.ParentBased(tt.rootSampler),
+				selection,
+			)
+
+			if tt.wantExport {
+				require.Len(t, groups[span.Service.UID], 1)
+			} else {
+				assert.Empty(t, groups[span.Service.UID])
+			}
+		})
+	}
+}
+
 type recordingSampler struct {
-	attributes []attribute.KeyValue
+	attributes    []attribute.KeyValue
+	parentContext trace2.SpanContext
 }
 
 func (s *recordingSampler) ShouldSample(parameters sdktrace.SamplingParameters) sdktrace.SamplingResult {
 	s.attributes = append([]attribute.KeyValue(nil), parameters.Attributes...)
+	s.parentContext = trace2.SpanContextFromContext(parameters.ParentContext)
 	return sdktrace.SamplingResult{Decision: sdktrace.RecordAndSample}
 }
 
