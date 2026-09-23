@@ -100,6 +100,10 @@ func TestRuntimeMetricCounterAllowsNanosecondRounding(t *testing.T) {
 }
 
 func testRuntimeMetricsGo(t *testing.T) {
+	testRuntimeMetricsGoAtPort(t, runtimeMetricsHostPort)
+}
+
+func testRuntimeMetricsGoAtPort(t *testing.T, port string) {
 	pq := promtest.Client{HostPort: prometheusHostPort}
 
 	monotonicMetrics := []struct {
@@ -188,12 +192,12 @@ func testRuntimeMetricsGo(t *testing.T) {
 		},
 	}
 
-	forceRuntimeGC(t)
-	expected := readRuntimeMetrics(t)
+	forceRuntimeGCAtPort(t, port)
+	expected := readRuntimeMetricsAtPort(t, port)
 
 	require.EventuallyWithT(t, func(ct *assert.CollectT) {
-		forceRuntimeGC(ct)
-		current := readRuntimeMetrics(ct)
+		forceRuntimeGCAtPort(ct, port)
+		current := readRuntimeMetricsAtPort(ct, port)
 		results, err := pq.Query(`go_memory_limit_bytes`)
 		require.NoError(ct, err)
 		require.NotEmpty(ct, results)
@@ -230,16 +234,16 @@ func testRuntimeMetricsGo(t *testing.T) {
 		}
 	}, testTimeout, 250*time.Millisecond)
 
-	expectedHistograms := readRuntimeHistograms(t)
+	expectedHistograms := readRuntimeHistograms(t, port)
 	require.EventuallyWithT(t, func(ct *assert.CollectT) {
-		generateRuntimeHistograms(ct)
-		currentHistograms := readRuntimeHistograms(ct)
+		generateRuntimeHistograms(ct, port)
+		currentHistograms := readRuntimeHistograms(ct, port)
 		for _, metric := range histogramMetrics {
 			assertRuntimeHistogramObserved(ct, pq, expectedHistograms, currentHistograms, metric)
 		}
 	}, testTimeout, 250*time.Millisecond)
 
-	assertRuntimeMemoryMetricsDuringConcurrentReads(t, pq)
+	assertRuntimeMemoryMetricsDuringConcurrentReads(t, pq, port)
 }
 
 func testRuntimeGoroutineCountSuppressedAboveProcessorLimit(t *testing.T) {
@@ -317,9 +321,9 @@ func testRuntimeMetricsGo117(t *testing.T) {
 
 // Repeated runtime/metrics.Read calls exercise Go's consistentHeapStats slot rotation
 // while GC runs, ensuring OBI does not export counters from a partial rotation.
-func assertRuntimeMemoryMetricsDuringConcurrentReads(t *testing.T, pq promtest.Client) {
-	setRuntimeMetricsReadLoop(t, true)
-	defer setRuntimeMetricsReadLoop(t, false)
+func assertRuntimeMemoryMetricsDuringConcurrentReads(t *testing.T, pq promtest.Client, port string) {
+	setRuntimeMetricsReadLoop(t, port, true)
+	defer setRuntimeMetricsReadLoop(t, port, false)
 
 	queries := []string{"go_memory_allocated_bytes_total", "go_memory_allocations_total"}
 	previous := make(map[string]float64, len(queries))
@@ -328,7 +332,7 @@ func assertRuntimeMemoryMetricsDuringConcurrentReads(t *testing.T, pq promtest.C
 	}
 
 	for range runtimeMetricsReadIterations {
-		forceRuntimeGC(t)
+		forceRuntimeGCAtPort(t, port)
 		time.Sleep(300 * time.Millisecond)
 		for _, query := range queries {
 			current := runtimeMetricValue(t, pq, query)
@@ -590,8 +594,8 @@ func setGOMAXPROCSAboveRuntimeMetricLimit(t require.TestingT) {
 	require.NoError(t, err)
 }
 
-func setRuntimeMetricsReadLoop(t require.TestingT, enabled bool) {
-	conn := runtimeMetricsConnAtPort(t, runtimeMetricsHostPort)
+func setRuntimeMetricsReadLoop(t require.TestingT, port string, enabled bool) {
+	conn := runtimeMetricsConnAtPort(t, port)
 	defer conn.Close()
 
 	command := "STOP_RUNTIME_METRICS_READ_LOOP\n"
@@ -603,10 +607,6 @@ func setRuntimeMetricsReadLoop(t require.TestingT, enabled bool) {
 
 	_, err = bufio.NewReader(conn).ReadString('\n')
 	require.NoError(t, err)
-}
-
-func readRuntimeMetrics(t require.TestingT) map[string]float64 {
-	return readRuntimeMetricsAtPort(t, runtimeMetricsHostPort)
 }
 
 func readRuntimeMetricsAtPort(t require.TestingT, port string) map[string]float64 {
@@ -621,8 +621,8 @@ func readRuntimeMetricsAtPort(t require.TestingT, port string) map[string]float6
 	return values
 }
 
-func generateRuntimeHistograms(t require.TestingT) {
-	conn := runtimeMetricsConnAtPort(t, runtimeMetricsHostPort)
+func generateRuntimeHistograms(t require.TestingT, port string) {
+	conn := runtimeMetricsConnAtPort(t, port)
 	defer conn.Close()
 
 	_, err := conn.Write([]byte("GENERATE_RUNTIME_HISTOGRAMS\n"))
@@ -632,8 +632,8 @@ func generateRuntimeHistograms(t require.TestingT) {
 	require.NoError(t, err)
 }
 
-func readRuntimeHistograms(t require.TestingT) map[string]runtimeHistogram {
-	conn := runtimeMetricsConnAtPort(t, runtimeMetricsHostPort)
+func readRuntimeHistograms(t require.TestingT, port string) map[string]runtimeHistogram {
+	conn := runtimeMetricsConnAtPort(t, port)
 	defer conn.Close()
 
 	_, err := conn.Write([]byte("RUNTIME_HISTOGRAMS\n"))
